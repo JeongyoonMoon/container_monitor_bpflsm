@@ -25,14 +25,24 @@ USR_OBJ = $(patsubst %.o,$(USR_DIR)/%.o,$(UOBJS))
 USR_BIN = $(patsubst %.o,%,$(USR_OBJ))
 USR_SKEL = $(wildcard $(USR_DIR)/*.skel.h)
 
+HDR_DIR := $(CURDIR)/header
+GOSRCS = $(notdir $(wildcard $(HDR_DIR)/*.go))
+GO_SRC = $(patsubst %.go,$(HDR_DIR)/%.go,$(GOSRCS))
+GOSHOBJS = $(GOSRCS:.go=.so)
+GO_SHOBJ = $(patsubst %.so,$(HDR_DIR)/%.so,$(GOSHOBJS))
+GO_HDR = $(GO_SRC:.go=.h)
+
 VMLINUXH = $(wildcard $(BPF_DIR)/vmlinux.h)
 BPFTOOL_BTF := $(shell bpftool btf dump file $(VMLINUXPATH) format c > $(BPF_DIR)/vmlinux.h)
 
-all: $(BPF_OBJ) $(USR_OBJ) $(USR_BIN) $(USR_SKEL)
+all: $(GO_SHOBJ) $(BPF_OBJ) $(USR_OBJ) $(USR_BIN) $(USR_SKEL)
 
 .PHONY: clean
 clean:
-	rm -f $(BPF_OBJ) $(USR_OBJ) $(USR_BIN) $(USR_SKEL)
+	rm -f $(BPF_OBJ) $(USR_OBJ) $(USR_BIN) $(USR_SKEL) $(GO_SHOBJ) $(GO_HDR)
+
+$(HDR_DIR)/%.so: $(HDR_DIR)/%.go
+	go build -o $@ -buildmode=c-shared $<
 
 # TODO: specify dependency more precisely
 $(BPF_DIR)/%.o: $(BPF_DIR)/%.c $(BPF_DIR)/vmlinux.h
@@ -51,5 +61,5 @@ $(USR_DIR)/% : $(USR_DIR)/%.o
 ifeq ($(wildcard $(BPFDIR)/libbpf.a),)
 	cd $(BPFDIR) && make
 endif
-	$(CC) -I$(USR_DIR) $(CFLAGS) -o $@ $< $(LDLIBS) -L$(BPFDIR) -lbpf
+	$(CC) -I$(USR_DIR) $(CFLAGS) -o $@ $< $(LDLIBS) -L$(BPFDIR) -lbpf $(GO_SHOBJ)
 
