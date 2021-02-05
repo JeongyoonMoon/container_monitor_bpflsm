@@ -33,6 +33,10 @@ void sig_handler (int signo);
 static int process_message(void *ctx, void *data, size_t len)
 {
 	struct message *rcv = data;
+	char *conid;
+
+	// TODO: Lookup NS-containerID map
+	conid = LookupContainerID(rcv->pid);
 	
 	if (rcv->mid == CRED_PREPARE){
 		fprintf(stdout, "[CRED_PREPARE] pid:%u ppid:%u attempt to preare a cred uid from %u to %u\n", rcv->pid, rcv->ppid, rcv->uid, rcv->old_uid);
@@ -41,7 +45,8 @@ static int process_message(void *ctx, void *data, size_t len)
 		fprintf(stdout, "[TASK_ALLOC] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	} 
 	else if (rcv->mid == TRACE_TASK_NEWTASK){
-		fprintf(stdout, "%s\n", LookupContainerID(rcv->pid));
+		fprintf(stdout, "containerID: %s\n", conid);
+		free(conid);
 		fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	}	
 
