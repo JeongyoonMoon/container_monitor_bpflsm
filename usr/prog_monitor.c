@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 #define _GNU_SOURCE
+#include <bpf/bpf.h>
 #include <linux/compiler.h>
 #include <asm/barrier.h>
 #include <sys/mman.h>
@@ -13,6 +14,7 @@
 #include <linux/perf_event.h>
 #include <linux/ring_buffer.h>
 #include <stdint.h>
+#include <string.h>
 #include "monitor.skel.h"
 #include "../header/message.h"
 #include "../header/container.h"
@@ -23,38 +25,83 @@ struct message{
 	uint32_t ppid;
 	uint32_t uid;
 	uint32_t old_uid;
-	//uint64_t empty;
+
+	uint32_t pid_id;
+	uint32_t mnt_id;
+};
+
+struct nskey{
+	uint32_t pid_id;
+	uint32_t mnt_id;
 };
 
 static int freed = 0;
+
+static struct monitor *skel;
+static struct ring_buffer *ringbuf;
+//static int pid2conid;
+static int ns2conid;
 
 void sig_handler (int signo);
 
 static int process_message(void *ctx, void *data, size_t len)
 {
 	struct message *rcv = data;
-	char *conid;
+	struct nskey key;
 
-	// TODO: Lookup NS-containerID map
-	conid = LookupContainerID(rcv->pid);
+	char conid[64]={'\0'}, *temp;
+	int ret, is_container = 1;
+
+	//ret = bpf_map_lookup_elem(pid2conid, &rcv->pid, conid);
+	key.pid_id = rcv->pid_id;
+	key.mnt_id = rcv->mnt_id;
 	
+	ret = bpf_map_lookup_elem(ns2conid, &key, conid);
+
+	// if map lookup fails, lookup procfs	
+	if (ret) {
+		temp = LookupContainerID(rcv->pid);
+		memcpy(conid, temp, 64);
+		free(temp);
+		// if empty string
+		if (conid[0] == '\0') {
+			is_container = 0;
+		}	
+		
+		else	bpf_map_update_elem(ns2conid, &key, &conid, BPF_ANY); 
+	}
+	//else	fprintf (stdout, "map lookup succeeded\n");
+
+
 	if (rcv->mid == CRED_PREPARE){
 		fprintf(stdout, "[CRED_PREPARE] pid:%u ppid:%u attempt to preare a cred uid from %u to %u\n", rcv->pid, rcv->ppid, rcv->uid, rcv->old_uid);
 	}
 	else if (rcv->mid == TASK_ALLOC){
 		fprintf(stdout, "[TASK_ALLOC] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	} 
+	else if (rcv->mid == TASK_FREE){
+			
+		// conid is not an empty string
+		if (is_container) {
+			//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
+
+			fprintf(stdout, "[TASK_FREE] pid:%u freed ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
+			fprintf(stdout, "containerid:%s\n", conid);	
+			//bpf_map_delete_elem(pid2conid, &rcv->pid);
+		}
+	}
 	else if (rcv->mid == TRACE_TASK_NEWTASK){
-		fprintf(stdout, "containerID: %s\n", conid);
-		free(conid);
-		fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
+		
+		if (is_container){
+			
+			fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
+			fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u \n", rcv->pid, rcv->ppid, rcv->uid);
+			fprintf(stdout, "containerID: %s\n", conid);
+		}
 	}	
 
 	return 0;
 }
-
-static struct monitor *skel;
-static struct ring_buffer *ringbuf;
 
 int main()
 {
@@ -80,6 +127,9 @@ int main()
 		fprintf(stdout, "failed to create ringbuf\n");
 		goto cleanup;
 	}
+
+//	pid2conid = bpf_map__fd(skel->maps.pid2conid);
+	ns2conid = bpf_map__fd(skel->maps.ns2conid);
 
 	err = monitor__attach(skel);
 	if (err){

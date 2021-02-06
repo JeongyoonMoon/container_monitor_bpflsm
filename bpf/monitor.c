@@ -12,18 +12,45 @@ char _license[] SEC("license") = "GPL";
 
 struct message{
 	u64 mid;
+	
 	u32 pid;
 	u32 ppid;
 	u32 uid;
 	u32 old_uid;
-	//u64 empty;
+
+	u32 pid_id;
+	u32 mnt_id;
+};
+
+struct conid{
+	char id[64];
+};
+struct nskey{
+	u32 pid_id;
+	u32 mnt_id;
 };
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 12);
 } ringbuf SEC(".maps");
+/*
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u32);
+	__type(value, struct conid);
+	__uint(max_entries, PID_MAX); 
+} pid2conid SEC(".maps");
+*/
 
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, struct nskey);
+	__type(value, struct conid);
+	__uint(max_entries, PID_MAX); 
+} ns2conid SEC(".maps");
+
+/*
 SEC("lsm/cred_prepare")
 int BPF_PROG(trace_fork, struct cred *new, const struct cred *old, gfp_t gfp, int ret)
 {
@@ -51,12 +78,13 @@ int BPF_PROG(trace_fork, struct cred *new, const struct cred *old, gfp_t gfp, in
 
 	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
 
-	if ((m.old_uid != 0) && (m.old_uid != m.uid))
-		return -EPERM;
+	//if ((m.old_uid != 0) && (m.old_uid != m.uid))
+	//	return -EPERM;
 	
 	return 0;
 }
-
+*/
+/*
 SEC("lsm/task_alloc")
 int BPF_PROG(trace_fork2, struct task_struct *task, unsigned long clone_flags, int ret)
 {
@@ -80,11 +108,43 @@ int BPF_PROG(trace_fork2, struct task_struct *task, unsigned long clone_flags, i
 	}
 
 	m.old_uid = EMPTY;
+	m.pid_id = EMPTY;
+	m.mnt_id = EMPTY;
 
 	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
 
 	return 0;
-}        
+}
+*/
+
+SEC("lsm/task_free")
+void BPF_PROG(lsm_task_free, struct task_struct *task)
+{
+
+	struct message m;
+
+	m.mid = TASK_FREE;
+	if (task){
+		BPF_CORE_READ_INTO (&m.pid, task, tgid);
+		BPF_CORE_READ_INTO (&m.ppid, task, real_parent, tgid);
+		BPF_CORE_READ_INTO (&m.uid, task, cred, uid.val);
+
+		BPF_CORE_READ_INTO (&m.pid_id, task, nsproxy, pid_ns_for_children, ns.inum);
+		BPF_CORE_READ_INTO (&m.mnt_id, task, nsproxy, mnt_ns, ns.inum);
+
+	}
+	else {
+		m.pid = EMPTY;
+		m.ppid = EMPTY;
+		m.uid = EMPTY;
+		m.pid_id = EMPTY;
+		m.mnt_id = EMPTY;
+	}
+
+	m.old_uid = EMPTY;
+
+	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+}
 
 SEC("tracepoint/task/task_newtask")
 int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
@@ -98,11 +158,16 @@ int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 
 	if (t){
 		BPF_CORE_READ_INTO (&m.ppid, t, tgid);
+		BPF_CORE_READ_INTO (&m.pid_id, t, nsproxy, pid_ns_for_children, ns.inum);
+		BPF_CORE_READ_INTO (&m.mnt_id, t, nsproxy, mnt_ns, ns.inum);
+
 	}
 	else {
 		m.pid = EMPTY;
 		m.ppid = EMPTY;
 		m.uid = EMPTY;
+		m.pid_id = EMPTY;
+		m.mnt_id = EMPTY;
 	}
 
 	m.pid = ctx->pid;
@@ -110,5 +175,6 @@ int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 	m.old_uid = EMPTY;
 
 	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+	
 	return 0;
 }
