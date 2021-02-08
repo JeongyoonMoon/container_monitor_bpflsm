@@ -6,3 +6,4 @@
 #define EMPTY 0xFFFFFFFF
 
 #define PID_MAX 0x00400000
+#define DOCKER_MAX 0x00000400

@@ -15,6 +15,7 @@
 #include <linux/ring_buffer.h>
 #include <stdint.h>
 #include <string.h>
+#include <unistd.h>
 #include "monitor.skel.h"
 #include "../header/message.h"
 #include "../header/container.h"
@@ -39,8 +40,7 @@ static int freed = 0;
 
 static struct monitor *skel;
 static struct ring_buffer *ringbuf;
-//static int pid2conid;
-static int ns2conid;
+static int ns2conid, conid2pids;
 
 void sig_handler (int signo);
 
@@ -49,10 +49,13 @@ static int process_message(void *ctx, void *data, size_t len)
 	struct message *rcv = data;
 	struct nskey key;
 
+
+	int new_pids, pids_fd;
+	uint32_t pids, ppid, value = 1;
 	char conid[64]={'\0'}, *temp;
 	int ret, is_container = 1;
 
-	//ret = bpf_map_lookup_elem(pid2conid, &rcv->pid, conid);
+	//check whether the parent is a container or not
 	key.pid_id = rcv->pid_id;
 	key.mnt_id = rcv->mnt_id;
 	
@@ -62,16 +65,30 @@ static int process_message(void *ctx, void *data, size_t len)
 	if (ret) {
 		temp = LookupContainerID(rcv->pid);
 		memcpy(conid, temp, 64);
+		fprintf(stdout, "conid: %s\n", temp);
 		free(temp);
 		// if empty string
 		if (conid[0] == '\0') {
 			is_container = 0;
 		}	
-		
-		else	bpf_map_update_elem(ns2conid, &key, &conid, BPF_ANY); 
+		else if (rcv->mid == TRACE_TASK_NEWTASK){
+			
+			// if containerid to pids(map) lookup succeeds
+			if (!bpf_map_lookup_elem(conid2pids, conid, &pids)){
+				pids_fd = bpf_map_get_fd_by_id(pids);
+				if (!bpf_map_lookup_elem(pids_fd, &rcv->ppid, &ppid)){
+					//if the parent is in the same container, update ns-conid map
+					//fprintf(stdout,"new ns-conid key value pair\n");
+					bpf_map_update_elem(ns2conid, &key, conid, BPF_ANY);
+				}
+			}
+		}		
 	}
-	//else	fprintf (stdout, "map lookup succeeded\n");
 
+	if (!is_container)
+		return 0;
+
+	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
 	if (rcv->mid == CRED_PREPARE){
 		fprintf(stdout, "[CRED_PREPARE] pid:%u ppid:%u attempt to preare a cred uid from %u to %u\n", rcv->pid, rcv->ppid, rcv->uid, rcv->old_uid);
@@ -80,25 +97,27 @@ static int process_message(void *ctx, void *data, size_t len)
 		fprintf(stdout, "[TASK_ALLOC] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	} 
 	else if (rcv->mid == TASK_FREE){
-			
-		// conid is not an empty string
-		if (is_container) {
-			//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
-
-			fprintf(stdout, "[TASK_FREE] pid:%u freed ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
-			fprintf(stdout, "containerid:%s\n", conid);	
-			//bpf_map_delete_elem(pid2conid, &rcv->pid);
-		}
+		/*TODO: delete corresponding entry in conid to pids map*/
+		fprintf(stdout, "[TASK_FREE] pid:%u freed ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	}
 	else if (rcv->mid == TRACE_TASK_NEWTASK){
-		
-		if (is_container){
-			
-			fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
-			fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u \n", rcv->pid, rcv->ppid, rcv->uid);
-			fprintf(stdout, "containerID: %s\n", conid);
+		// not empty container id && if containerid to pids(map) lookup fails 
+		if (conid[0]!='\0' && bpf_map_lookup_elem(conid2pids, conid, &pids)){	
+			// new inner map
+			new_pids = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint32_t), PID_MAX, 0); 
+			bpf_map_update_elem(conid2pids, conid, &new_pids, BPF_ANY);
+			close(new_pids);
+			bpf_map_lookup_elem(conid2pids, conid, &pids);
 		}
-	}	
+		
+		pids_fd = bpf_map_get_fd_by_id(pids);
+		bpf_map_update_elem(pids_fd, &rcv->pid, &value, BPF_ANY);
+		
+
+		fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u \n", rcv->pid, rcv->ppid, rcv->uid);
+	}
+	
+	fprintf(stdout, "containerID: %s\n", conid);
 
 	return 0;
 }
@@ -128,7 +147,9 @@ int main()
 		goto cleanup;
 	}
 
-//	pid2conid = bpf_map__fd(skel->maps.pid2conid);
+	close(bpf_map__fd(skel->maps.pids));
+	
+	conid2pids = bpf_map__fd(skel->maps.conid2pids);
 	ns2conid = bpf_map__fd(skel->maps.ns2conid);
 
 	err = monitor__attach(skel);

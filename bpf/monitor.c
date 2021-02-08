@@ -25,23 +25,31 @@ struct message{
 struct conid{
 	char id[64];
 };
+
 struct nskey{
 	u32 pid_id;
 	u32 mnt_id;
 };
 
+struct inner_pids {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__type(key, u32);
+	__type(value, int);
+	__uint(max_entries, PID_MAX);
+} pids SEC(".maps");
+
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
 	__uint(max_entries, 1 << 12);
 } ringbuf SEC(".maps");
-/*
+
+
 struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u32);
-	__type(value, struct conid);
-	__uint(max_entries, PID_MAX); 
-} pid2conid SEC(".maps");
-*/
+	__uint(type, BPF_MAP_TYPE_HASH_OF_MAPS);
+	__uint(key_size, sizeof(struct conid));
+	__uint(max_entries, DOCKER_MAX); 
+	__array(values, struct inner_pids);
+} conid2pids SEC(".maps");
 
 struct {
 	__uint(type, BPF_MAP_TYPE_HASH);
