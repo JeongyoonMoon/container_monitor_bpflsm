@@ -65,7 +65,7 @@ static int process_message(void *ctx, void *data, size_t len)
 	if (ret) {
 		temp = LookupContainerID(rcv->pid);
 		memcpy(conid, temp, 64);
-		fprintf(stdout, "conid: %s\n", temp);
+		//fprintf(stdout, "conid: %s\n", temp);
 		free(temp);
 		// if empty string
 		if (conid[0] == '\0') {
@@ -73,20 +73,15 @@ static int process_message(void *ctx, void *data, size_t len)
 		}	
 		else if (rcv->mid == TRACE_TASK_NEWTASK){
 			
-			// if containerid to pids(map) lookup succeeds
+			// prevent a wrong update from the first process of a container doesn't have own NS
 			if (!bpf_map_lookup_elem(conid2pids, conid, &pids)){
-				pids_fd = bpf_map_get_fd_by_id(pids);
-				if (!bpf_map_lookup_elem(pids_fd, &rcv->ppid, &ppid)){
-					//if the parent is in the same container, update ns-conid map
-					//fprintf(stdout,"new ns-conid key value pair\n");
-					bpf_map_update_elem(ns2conid, &key, conid, BPF_ANY);
-				}
+				bpf_map_update_elem(ns2conid, &key, conid, BPF_ANY);
 			}
 		}		
 	}
 
-	if (!is_container)
-		return 0;
+//	if (!is_container)
+//		return 0;
 
 	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
@@ -97,27 +92,41 @@ static int process_message(void *ctx, void *data, size_t len)
 		fprintf(stdout, "[TASK_ALLOC] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	} 
 	else if (rcv->mid == TASK_FREE){
-		/*TODO: delete corresponding entry in conid to pids map*/
 		fprintf(stdout, "[TASK_FREE] pid:%u freed ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	}
+
 	else if (rcv->mid == TRACE_TASK_NEWTASK){
 		// not empty container id && if containerid to pids(map) lookup fails 
-		if (conid[0]!='\0' && bpf_map_lookup_elem(conid2pids, conid, &pids)){	
-			// new inner map
-			new_pids = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint32_t), PID_MAX, 0); 
-			bpf_map_update_elem(conid2pids, conid, &new_pids, BPF_ANY);
-			close(new_pids);
-			bpf_map_lookup_elem(conid2pids, conid, &pids);
+		if (conid[0] != '\0'){ 
+			if(bpf_map_lookup_elem(conid2pids, conid, &pids)){	
+			
+				// new inner map
+				new_pids = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint32_t), PID_MAX, 0); 
+				bpf_map_update_elem(conid2pids, conid, &new_pids, BPF_ANY);
+				close(new_pids);
+				bpf_map_lookup_elem(conid2pids, conid, &pids);
+			}
+			pids_fd = bpf_map_get_fd_by_id(pids);
+			bpf_map_update_elem(pids_fd, &rcv->pid, &value, BPF_ANY);
 		}
 		
-		pids_fd = bpf_map_get_fd_by_id(pids);
-		bpf_map_update_elem(pids_fd, &rcv->pid, &value, BPF_ANY);
-		
+			
 
 		fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u \n", rcv->pid, rcv->ppid, rcv->uid);
 	}
+	else if (rcv->mid == TRACE_SCHED_PROCESS_EXIT){
+		// remove map entries related to the process 
+		if (!bpf_map_lookup_elem(conid2pids, conid, &pids)){
+			pids_fd = bpf_map_get_fd_by_id(pids);
+			bpf_map_delete_elem(pids_fd, &rcv->pid);
+		}
+
+		//TODO: Handle NS-ConID map using pid from pid namespace
+
+		fprintf(stdout, "[SCHED_PROCESS_EXIT] pid:%u will exit ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
+	}
 	
-	fprintf(stdout, "containerID: %s\n", conid);
+	//fprintf(stdout, "containerID: %s\n", conid);
 
 	return 0;
 }
