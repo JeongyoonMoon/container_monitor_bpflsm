@@ -26,9 +26,11 @@ struct message{
 	uint32_t ppid;
 	uint32_t uid;
 	uint32_t old_uid;
+	uint32_t pid_from_ns;
 
 	uint32_t pid_id;
 	uint32_t mnt_id;
+	uint32_t pad;
 };
 
 struct nskey{
@@ -126,6 +128,8 @@ static int process_message(void *ctx, void *data, size_t len)
 		fprintf(stdout, "[SCHED_PROCESS_EXIT] pid:%u will exit ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	}
 	
+	fprintf(stdout, "pid from ns: %u\n", rcv->pid_from_ns);
+
 	//fprintf(stdout, "containerID: %s\n", conid);
 
 	return 0;
