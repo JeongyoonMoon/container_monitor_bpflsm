@@ -18,11 +18,10 @@ struct message{
 	u32 uid;
 	u32 old_uid;
 	u32 pid_from_ns;
+	u32 tid_from_ns;
 
 	u32 pid_id;
 	u32 mnt_id;
-	
-	u32 pad;
 };
 
 struct conid{
@@ -202,6 +201,7 @@ int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 		BPF_CORE_READ_INTO (&m.pid_id, t, nsproxy, pid_ns_for_children, ns.inum);
 		BPF_CORE_READ_INTO (&m.mnt_id, t, nsproxy, mnt_ns, ns.inum);
 		m.pid_from_ns = get_task_ns_tgid(t);
+		m.tid_from_ns = get_task_ns_pid(t);
 
 	}
 	else {
@@ -209,12 +209,12 @@ int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 		m.pid_id = EMPTY;
 		m.mnt_id = EMPTY;
 		m.pid_from_ns = EMPTY;
+		m.tid_from_ns = EMPTY;
 	}
 
 	m.pid = ctx->pid;
 	m.uid = bpf_get_current_uid_gid();
 	m.old_uid = EMPTY;
-	m.pad = EMPTY;
 
 	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
 	
@@ -237,6 +237,7 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 		BPF_CORE_READ_INTO (&m.pid_id, t, nsproxy, pid_ns_for_children, ns.inum);
 		BPF_CORE_READ_INTO (&m.mnt_id, t, nsproxy, mnt_ns, ns.inum);
 		m.pid_from_ns = get_task_ns_tgid(t);
+		m.tid_from_ns = get_task_ns_pid(t);
 
 	}
 	else {
@@ -244,12 +245,12 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 		m.pid_id = EMPTY;
 		m.mnt_id = EMPTY;
 		m.pid_from_ns = EMPTY;
+		m.tid_from_ns = EMPTY;
 	}
 
 	m.pid = ctx->pid;
 	m.uid = bpf_get_current_uid_gid();
 	m.old_uid = EMPTY;
-	m.pad = EMPTY;
 
 	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
 	

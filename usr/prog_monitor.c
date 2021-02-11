@@ -27,6 +27,7 @@ struct message{
 	uint32_t uid;
 	uint32_t old_uid;
 	uint32_t pid_from_ns;
+	uint32_t tid_from_ns;
 
 	uint32_t pid_id;
 	uint32_t mnt_id;
@@ -52,7 +53,7 @@ static int process_message(void *ctx, void *data, size_t len)
 	struct nskey key;
 
 
-	int new_pids, pids_fd;
+	int new_pids, pids_fd = -1;
 	uint32_t pids, ppid, value = 1;
 	char conid[64]={'\0'}, *temp;
 	int ret, is_container = 1;
@@ -67,7 +68,6 @@ static int process_message(void *ctx, void *data, size_t len)
 	if (ret) {
 		temp = LookupContainerID(rcv->pid);
 		memcpy(conid, temp, 64);
-		//fprintf(stdout, "conid: %s\n", temp);
 		free(temp);
 		// if empty string
 		if (conid[0] == '\0') {
@@ -82,8 +82,8 @@ static int process_message(void *ctx, void *data, size_t len)
 		}		
 	}
 
-//	if (!is_container)
-//		return 0;
+	if (!is_container)
+		return 0;
 
 	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
@@ -109,10 +109,10 @@ static int process_message(void *ctx, void *data, size_t len)
 				bpf_map_lookup_elem(conid2pids, conid, &pids);
 			}
 			pids_fd = bpf_map_get_fd_by_id(pids);
+			fprintf(stdout, "map id: %u, map fd: %d\n", pids, pids_fd);
 			bpf_map_update_elem(pids_fd, &rcv->pid, &value, BPF_ANY);
+			close(pids_fd);
 		}
-		
-			
 
 		fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u \n", rcv->pid, rcv->ppid, rcv->uid);
 	}
@@ -121,14 +121,23 @@ static int process_message(void *ctx, void *data, size_t len)
 		if (!bpf_map_lookup_elem(conid2pids, conid, &pids)){
 			pids_fd = bpf_map_get_fd_by_id(pids);
 			bpf_map_delete_elem(pids_fd, &rcv->pid);
+			close(pids_fd);
 		}
 
-		//TODO: Handle NS-ConID map using pid from pid namespace
+		// assume if process in a container with pid 1 exit, the container also exit.
+		// then remove relevant NS to conid map entry and conid to pids map entry
+		if (rcv->pid_from_ns == 1u && rcv->tid_from_ns == 1u){
+			if (!ret)	bpf_map_delete_elem(ns2conid, &key);	
+			if (pids_fd >= 0) {
+				bpf_map_delete_elem(conid2pids, conid);
+			}
+
+		}
 
 		fprintf(stdout, "[SCHED_PROCESS_EXIT] pid:%u will exit ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
 	}
 	
-	fprintf(stdout, "pid from ns: %u\n", rcv->pid_from_ns);
+	//fprintf(stdout, "pid from ns: %u tid from ns: %u \n", rcv->pid_from_ns, rcv->tid_from_ns);
 
 	//fprintf(stdout, "containerID: %s\n", conid);
 
