@@ -1,5 +1,5 @@
 ## container_monitor_bpflsm
-a container monitor using eBPF LSM(for provenance) and tracepoint.
+a container monitor using eBPF LSM(for provenance) and tracepoint.  
 
 ### Installation Guide (In progress)
 ```bash
@@ -48,8 +48,8 @@ cd ..
 ```
 
 ### TODO
-Complete the installation script.
-Refactoring(Macro, functions for redundant operations,debugging options)
-Distinguish Subject info. and Object info.
-Add monitoring file operations
-Add monitoring network operations
+- Complete the installation script  
+- Refactoring(Macro, functions for redundant operations,debugging options)  
+- Distinguish Subject info. and Object info.  
+- Add monitoring file operations  
+- Add monitoring network operations
