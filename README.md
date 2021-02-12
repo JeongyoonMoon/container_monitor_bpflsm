@@ -48,8 +48,8 @@ cd ..
 ```
 
 ### TODO
-- Complete the installation script  
-- Refactoring(Macro, functions for redundant operations,debugging options)  
+- Complete the installation script    
 - Distinguish Subject info. and Object info.  
 - Add monitoring file operations  
-- Add monitoring network operations
+- Add monitoring network operations  
+- Add log options and hook options
