@@ -2,7 +2,7 @@
 // Copyright (c) 2020 Facebook
 
 #include "vmlinux.h"
-#include "../header/message.h"
+#include "../header/monitor_defs.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -10,18 +10,27 @@
 
 char _license[] SEC("license") = "GPL";
 
-struct message{
-	u64 mid;
-	
+struct monitor_ctx {
+	/* which hook point is called */
+	u64 event_id;
+
+	/* subject information */	
 	u32 pid;
 	u32 ppid;
 	u32 uid;
-	u32 old_uid;
-	u32 pid_from_ns;
-	u32 tid_from_ns;
 
 	u32 pid_id;
 	u32 mnt_id;
+	
+	u32 pid_from_ns;
+	u32 tid_from_ns;
+
+	/* object information */
+	/* could be EMPTY if not used */
+	u32 o_pid;
+	u32 o_uid;
+	u32 o_newuid; /* for lsm/cred_preapre */
+
 };
 
 struct conid{
@@ -60,8 +69,23 @@ struct {
 	__uint(max_entries, PID_MAX); 
 } ns2conid SEC(".maps");
 
-static __always_inline u32 get_task_ns_pid(struct task_struct *task)
-{
+static __always_inline u32 get_task_pid(struct task_struct *task) {
+	
+	return BPF_CORE_READ(task, tgid);
+}
+
+static __always_inline u32 get_task_ppid(struct task_struct *task) {
+
+	return BPF_CORE_READ(task, real_parent, tgid);
+}
+
+static __always_inline u32 get_task_uid(struct task_struct *task) {
+	
+	return BPF_CORE_READ(task, cred, uid.val);
+
+}
+
+static __always_inline u32 get_task_ns_pid(struct task_struct *task) {
 	unsigned int l;
 	u32 pid_from_ns;
 
@@ -71,8 +95,7 @@ static __always_inline u32 get_task_ns_pid(struct task_struct *task)
 
 }
 
-static __always_inline u32 get_task_ns_tgid(struct task_struct *task)
-{
+static __always_inline u32 get_task_ns_tgid(struct task_struct *task) {
 	unsigned int l;
 	u32 tgid_from_ns;
 
@@ -81,41 +104,63 @@ static __always_inline u32 get_task_ns_tgid(struct task_struct *task)
 	return tgid_from_ns;	
 }
 
-/*
-struct {
-	__uint(type, BPF_MAP_TYPE_HASH);
-	__type(key, u32);
-	__type(value, struct conid);
-	__uint(max_entries, PID_MAX); 
-} pid2conid SEC(".maps");
-*/
+static __always_inline u32 get_task_mnt_id(struct task_struct *task) {
+	
+	return BPF_CORE_READ(task, nsproxy, pid_ns_for_children, ns.inum);	
+}
+
+static __always_inline u32 get_task_pid_id(struct task_struct *task) {
+	
+	return BPF_CORE_READ(task, nsproxy, mnt_ns, ns.inum);	
+}
+
+static __always_inline void set_mctx_subject(struct monitor_ctx *mctx, struct task_struct *task) {
+	mctx->pid = get_task_pid(task);
+	mctx->ppid = get_task_ppid(task);
+	mctx->uid = get_task_uid(task);
+
+	mctx->mnt_id = get_task_mnt_id(task);
+	mctx->pid_id = get_task_pid_id(task);
+	
+	mctx->pid_from_ns = get_task_ns_tgid(task);
+	mctx->tid_from_ns = get_task_ns_pid(task);
+}
+
+static __always_inline void set_mctx_subject_empty(struct monitor_ctx *mctx) {
+	mctx->pid = EMPTY;
+	mctx->ppid = EMPTY;
+	mctx->uid = EMPTY;
+
+	mctx->mnt_id = EMPTY;
+	mctx->pid_id = EMPTY;
+	
+	mctx->pid_from_ns = EMPTY;
+	mctx->tid_from_ns = EMPTY;
+}
 /*
 SEC("lsm/cred_prepare")
-int BPF_PROG(trace_fork, struct cred *new, const struct cred *old, gfp_t gfp, int ret)
+int BPF_PROG(lsm_cred_preare, struct cred *new, const struct cred *old, gfp_t gfp, int ret)
 {
 	if (ret)	return ret;
 
-	struct message m;
-
+	struct monitor_ctx mctx;
 	struct task_struct *t;
 
+	mctx.event_id = LSM_CRED_PREPARE;
+
 	t = (struct task_struct *)bpf_get_current_task();
-
-	m.mid = CRED_PREPARE;
-
 	if (t){
-		BPF_CORE_READ_INTO (&m.pid, t, tgid);
-		BPF_CORE_READ_INTO (&m.ppid, t, real_parent, tgid);
+		set_mctx_subject(&mctx, t);
 	}
 	else {
-		m.pid = EMPTY;
-		m.ppid = EMPTY;
-		m.uid = EMPTY;
-	}	
-	m.old_uid = old->uid.val;
-	m.uid = new->uid.val;
+		set_mctx_subject_empty(&mctx);
+	}
 
-	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+	mctx.o_pid = EMPTY;
+	mctx.o_uid = old->uid.val;
+	mctx.o_newuid = new->uid.val;
+
+	bpf_ringbuf_output(&ringbuf, &mctx, sizeof(struct monitor_ctx), 0);
 
 	//if ((m.old_uid != 0) && (m.old_uid != m.uid))
 	//	return -EPERM;
@@ -123,100 +168,77 @@ int BPF_PROG(trace_fork, struct cred *new, const struct cred *old, gfp_t gfp, in
 	return 0;
 }
 */
-/*
+
 SEC("lsm/task_alloc")
-int BPF_PROG(trace_fork2, struct task_struct *task, unsigned long clone_flags, int ret)
+int BPF_PROG(lsm_task_alloc, struct task_struct *task, unsigned long clone_flags, int ret)
 {
 	if (ret)	return ret;
 
-	struct message m;
+	struct monitor_ctx mctx;
 	struct task_struct *t;
 
-	t = (struct task_struct *)bpf_get_current_task();
+	mctx.event_id = LSM_TASK_ALLOC;
 
-	m.mid = TASK_ALLOC;
+	t = (struct task_struct *)bpf_get_current_task();
 	if (t){
-		BPF_CORE_READ_INTO (&m.pid, task, tgid);
-		BPF_CORE_READ_INTO (&m.ppid, t, real_parent, tgid);
-		BPF_CORE_READ_INTO (&m.uid, t, cred, uid.val);
+		set_mctx_subject(&mctx, t);
 	}
 	else {
-		m.pid = EMPTY;
-		m.ppid = EMPTY;
-		m.uid = EMPTY;
+		set_mctx_subject_empty(&mctx);
 	}
 
-	m.old_uid = EMPTY;
-	m.pid_id = EMPTY;
-	m.mnt_id = EMPTY;
+	mctx.o_pid = get_task_pid(task);
+	mctx.o_uid = get_task_uid(task);
+	mctx.o_newuid = EMPTY;
 
-	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+	bpf_ringbuf_output(&ringbuf, &mctx, sizeof(struct monitor_ctx), 0);
 
 	return 0;
 }
-*/
-/*
+
 SEC("lsm/task_free")
 void BPF_PROG(lsm_task_free, struct task_struct *task)
 {
 
-	struct message m;
+	struct monitor_ctx mctx;
+	struct task_struct *t;
 
-	m.mid = TASK_FREE;
-	if (task){
-		BPF_CORE_READ_INTO (&m.pid, task, tgid);
-		BPF_CORE_READ_INTO (&m.ppid, task, real_parent, tgid);
-		BPF_CORE_READ_INTO (&m.uid, task, cred, uid.val);
-
-		BPF_CORE_READ_INTO (&m.pid_id, task, nsproxy, pid_ns_for_children, ns.inum);
-		BPF_CORE_READ_INTO (&m.mnt_id, task, nsproxy, mnt_ns, ns.inum);
-
-	}
-	else {
-		m.pid = EMPTY;
-		m.ppid = EMPTY;
-		m.uid = EMPTY;
-		m.pid_id = EMPTY;
-		m.mnt_id = EMPTY;
+	mctx.event_id = LSM_TASK_FREE;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx);
 	}
 
-	m.old_uid = EMPTY;
+	mctx.o_pid = get_task_pid(task);
+	mctx.o_uid = get_task_uid(task);
+	mctx.o_newuid = EMPTY;
 
-	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+	bpf_ringbuf_output(&ringbuf, &mctx, sizeof(struct monitor_ctx), 0);
 }
-*/
 
 SEC("tracepoint/task/task_newtask")
 int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 {
-	struct message m;
+	struct monitor_ctx mctx;
 	struct task_struct *t;
 	
+	mctx.event_id = TRACE_TASK_NEWTASK;
+	
 	t = (struct task_struct *)bpf_get_current_task();
-
-	m.mid = TRACE_TASK_NEWTASK;
-
-	if (t){
-		BPF_CORE_READ_INTO (&m.ppid, t, tgid);
-		BPF_CORE_READ_INTO (&m.pid_id, t, nsproxy, pid_ns_for_children, ns.inum);
-		BPF_CORE_READ_INTO (&m.mnt_id, t, nsproxy, mnt_ns, ns.inum);
-		m.pid_from_ns = get_task_ns_tgid(t);
-		m.tid_from_ns = get_task_ns_pid(t);
-
+	if (t) {
+		set_mctx_subject(&mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx);	
 	}
-	else {
-		m.ppid = EMPTY;
-		m.pid_id = EMPTY;
-		m.mnt_id = EMPTY;
-		m.pid_from_ns = EMPTY;
-		m.tid_from_ns = EMPTY;
-	}
+	
+	mctx.o_pid = ctx->pid;
+	mctx.o_uid = EMPTY;
+	mctx.o_newuid = EMPTY;
 
-	m.pid = ctx->pid;
-	m.uid = bpf_get_current_uid_gid();
-	m.old_uid = EMPTY;
-
-	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+	bpf_ringbuf_output(&ringbuf, &mctx, sizeof(struct monitor_ctx), 0);
 	
 	return 0;
 }
@@ -225,34 +247,23 @@ int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 SEC("tracepoint/sched/sched_process_exit")
 int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_template *ctx)
 {
-	struct message m;
+	struct monitor_ctx mctx;
 	struct task_struct *t;
-	
+
+	mctx.event_id = TRACE_SCHED_PROCESS_EXIT;
+
 	t = (struct task_struct *)bpf_get_current_task();
-
-	m.mid = TRACE_SCHED_PROCESS_EXIT;
-
-	if (t){
-		BPF_CORE_READ_INTO (&m.ppid, t, real_parent, tgid);
-		BPF_CORE_READ_INTO (&m.pid_id, t, nsproxy, pid_ns_for_children, ns.inum);
-		BPF_CORE_READ_INTO (&m.mnt_id, t, nsproxy, mnt_ns, ns.inum);
-		m.pid_from_ns = get_task_ns_tgid(t);
-		m.tid_from_ns = get_task_ns_pid(t);
-
-	}
-	else {
-		m.ppid = EMPTY;
-		m.pid_id = EMPTY;
-		m.mnt_id = EMPTY;
-		m.pid_from_ns = EMPTY;
-		m.tid_from_ns = EMPTY;
+	if (t) {
+		set_mctx_subject(&mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx);
 	}
 
-	m.pid = ctx->pid;
-	m.uid = bpf_get_current_uid_gid();
-	m.old_uid = EMPTY;
-
-	bpf_ringbuf_output(&ringbuf, &m, sizeof(struct message), 0);
+	mctx.o_pid = ctx->pid;
+	mctx.o_uid = EMPTY;
+	mctx.o_newuid = EMPTY;	
+	
+	bpf_ringbuf_output(&ringbuf, &mctx, sizeof(struct monitor_ctx), 0);
 	
 	return 0;
 }

@@ -17,21 +17,25 @@
 #include <string.h>
 #include <unistd.h>
 #include "monitor.skel.h"
-#include "../header/message.h"
+#include "../header/monitor_defs.h"
 #include "../header/container.h"
 
-struct message{
-	uint64_t mid;
+struct monitor_ctx {
+	uint64_t event_id;
+
 	uint32_t pid;
 	uint32_t ppid;
 	uint32_t uid;
-	uint32_t old_uid;
-	uint32_t pid_from_ns;
-	uint32_t tid_from_ns;
 
 	uint32_t pid_id;
 	uint32_t mnt_id;
-	uint32_t pad;
+	
+	uint32_t pid_from_ns;
+	uint32_t tid_from_ns;
+
+	uint32_t o_pid;
+	uint32_t o_uid;
+	uint32_t o_newuid;
 };
 
 struct nskey{
@@ -47,98 +51,94 @@ static int ns2conid, conid2pids;
 
 void sig_handler (int signo);
 
-static int process_message(void *ctx, void *data, size_t len)
+static int process_ringbuf(void *ctx, void *data, size_t len)
 {
-	struct message *rcv = data;
+	struct monitor_ctx *mctx = data;
 	struct nskey key;
+	int new_pids;
+	int pids_fd = -1;
+	uint32_t pids;
+	uint32_t value = EMPTY;
+	char conid[64]={'\0'};
+	char *temp;
+	int ret;
+	int is_container = 1;
 
-
-	int new_pids, pids_fd = -1;
-	uint32_t pids, ppid, value = 1;
-	char conid[64]={'\0'}, *temp;
-	int ret, is_container = 1;
-
-	//check whether the parent is a container or not
-	key.pid_id = rcv->pid_id;
-	key.mnt_id = rcv->mnt_id;
+	key.pid_id = mctx->pid_id;
+	key.mnt_id = mctx->mnt_id;
 	
 	ret = bpf_map_lookup_elem(ns2conid, &key, conid);
 
-	// if map lookup fails, lookup procfs	
 	if (ret) {
-		temp = LookupContainerID(rcv->pid);
+		temp = LookupContainerID(mctx->pid);
 		memcpy(conid, temp, 64);
 		free(temp);
-		// if empty string
+		
 		if (conid[0] == '\0') {
 			is_container = 0;
 		}	
-		else if (rcv->mid == TRACE_TASK_NEWTASK){
-			
-			// prevent a wrong update from the first process of a container doesn't have own NS
+		else if (mctx->event_id == TRACE_TASK_NEWTASK){
 			if (!bpf_map_lookup_elem(conid2pids, conid, &pids)){
 				bpf_map_update_elem(ns2conid, &key, conid, BPF_ANY);
-			}
+			}/* If not the first process of the container */
 		}		
-	}
+	} /* If nskey to container id map lookup fails */
 
 	if (!is_container)
 		return 0;
 
 	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
-	if (rcv->mid == CRED_PREPARE){
-		fprintf(stdout, "[CRED_PREPARE] pid:%u ppid:%u attempt to preare a cred uid from %u to %u\n", rcv->pid, rcv->ppid, rcv->uid, rcv->old_uid);
+	if (mctx->event_id == LSM_CRED_PREPARE) {
+		fprintf(stdout, "[CRED_PREPARE] process(pid:%u,uid:%u) -> from cred(uid:%u) to cred(uid:%u)\n", mctx->pid, mctx->uid, mctx->o_uid, mctx->o_newuid);
 	}
-	else if (rcv->mid == TASK_ALLOC){
-		fprintf(stdout, "[TASK_ALLOC] pid:%u allocated by parent pid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
+	else if (mctx->event_id == LSM_TASK_ALLOC) {
+		fprintf(stdout, "[TASK_ALLOC] process (pid:%u,uid:%u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
 	} 
-	else if (rcv->mid == TASK_FREE){
-		fprintf(stdout, "[TASK_FREE] pid:%u freed ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
+	else if (mctx->event_id == LSM_TASK_FREE) {
+		fprintf(stdout, "[TASK_FREE] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
 	}
-
-	else if (rcv->mid == TRACE_TASK_NEWTASK){
-		// not empty container id && if containerid to pids(map) lookup fails 
-		if (conid[0] != '\0'){ 
-			if(bpf_map_lookup_elem(conid2pids, conid, &pids)){	
-			
+	else if (mctx->event_id == TRACE_TASK_NEWTASK) {
+		
+		if (conid[0] != '\0') { 
+			if (bpf_map_lookup_elem(conid2pids, conid, &pids)) {	
 				// new inner map
 				new_pids = bpf_create_map(BPF_MAP_TYPE_HASH, sizeof(uint32_t), sizeof(uint32_t), PID_MAX, 0); 
 				bpf_map_update_elem(conid2pids, conid, &new_pids, BPF_ANY);
 				close(new_pids);
 				bpf_map_lookup_elem(conid2pids, conid, &pids);
-			}
-			pids_fd = bpf_map_get_fd_by_id(pids);
-			fprintf(stdout, "map id: %u, map fd: %d\n", pids, pids_fd);
-			bpf_map_update_elem(pids_fd, &rcv->pid, &value, BPF_ANY);
-			close(pids_fd);
-		}
+			} /*If container id to pids map lookup fails */
 
-		fprintf(stdout, "[TRACE_TASK_NEWTASK] pid:%u allocated by parent pid:%u uid:%u \n", rcv->pid, rcv->ppid, rcv->uid);
+			// add current pid to the inner pids map
+			pids_fd = bpf_map_get_fd_by_id(pids);
+			bpf_map_update_elem(pids_fd, &mctx->pid, &value, BPF_ANY);
+			close(pids_fd);
+		} /* If container id is not empty */
+
+		fprintf(stdout, "[TRACE_TASK_NEWTASK] process (pid:%u,uid %u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
 	}
-	else if (rcv->mid == TRACE_SCHED_PROCESS_EXIT){
-		// remove map entries related to the process 
+	else if (mctx->event_id == TRACE_SCHED_PROCESS_EXIT) {
+		
 		if (!bpf_map_lookup_elem(conid2pids, conid, &pids)){
+			/* remove current pid from the map */
 			pids_fd = bpf_map_get_fd_by_id(pids);
-			bpf_map_delete_elem(pids_fd, &rcv->pid);
+			bpf_map_delete_elem(pids_fd, &mctx->pid);
 			close(pids_fd);
-		}
+		} /* if container id to pids map lookup succeeds*/
 
-		// assume if process in a container with pid 1 exit, the container also exit.
+		// Assume if process in a container with process id 1, thread id 1 exit,
+		// the container also exit.
 		// then remove relevant NS to conid map entry and conid to pids map entry
-		if (rcv->pid_from_ns == 1u && rcv->tid_from_ns == 1u){
+		if (mctx->pid_from_ns == 1u && mctx->tid_from_ns == 1u){
 			if (!ret)	bpf_map_delete_elem(ns2conid, &key);	
 			if (pids_fd >= 0) {
 				bpf_map_delete_elem(conid2pids, conid);
 			}
-
 		}
-
-		fprintf(stdout, "[SCHED_PROCESS_EXIT] pid:%u will exit ppid:%u uid:%u\n", rcv->pid, rcv->ppid, rcv->uid);
+		fprintf(stdout, "[SCHED_PROCESS_EXIT] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
 	}
 	
-	//fprintf(stdout, "pid from ns: %u tid from ns: %u \n", rcv->pid_from_ns, rcv->tid_from_ns);
-
+	//fprintf(stdout, "pid from ns: %u tid from ns: %u \n", mctx->pid_from_ns, mctx->tid_from_ns);
 	//fprintf(stdout, "containerID: %s\n", conid);
 
 	return 0;
@@ -162,7 +162,7 @@ int main()
 		return 0;
 	}
 
-	ringbuf = ring_buffer__new(bpf_map__fd(skel->maps.ringbuf), process_message, NULL, NULL);
+	ringbuf = ring_buffer__new(bpf_map__fd(skel->maps.ringbuf), process_ringbuf, NULL, NULL);
 	
 	if (!ringbuf){
 		fprintf(stdout, "failed to create ringbuf\n");
