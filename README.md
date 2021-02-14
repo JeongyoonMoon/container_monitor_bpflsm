@@ -48,8 +48,9 @@ cd ..
 ```
 
 ### TODO
-- Complete the installation script    
-- Distinguish Subject info. and Object info.  
+- Complete the installation script  
 - Add monitoring file operations  
 - Add monitoring network operations  
-- Add log options and hook options
+- Add log options and hook options  
+- Change ringbuf API from output API to reserve/commit API
+- Change struct initialization part

@@ -21,7 +21,7 @@
 #include "../header/container.h"
 
 struct monitor_ctx {
-	uint64_t event_id;
+	uint32_t event_id;
 
 	uint32_t pid;
 	uint32_t ppid;
@@ -36,6 +36,12 @@ struct monitor_ctx {
 	uint32_t o_pid;
 	uint32_t o_uid;
 	uint32_t o_newuid;
+	uint32_t pad;
+};
+
+struct monitor_ctx_bin {
+	struct monitor_ctx mctx;
+	char filename[NAME_MAX];
 };
 
 struct nskey{
@@ -53,7 +59,8 @@ void sig_handler (int signo);
 
 static int process_ringbuf(void *ctx, void *data, size_t len)
 {
-	struct monitor_ctx *mctx = data;
+	struct monitor_ctx *mctx = NULL;
+	struct monitor_ctx_bin *mctx_bin = NULL;
 	struct nskey key;
 	int new_pids;
 	int pids_fd = -1;
@@ -63,6 +70,13 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	char *temp;
 	int ret;
 	int is_container = 1;
+
+	if (len == sizeof(struct monitor_ctx_bin)) {
+		mctx_bin = data;
+		mctx = &(mctx_bin->mctx);
+	} else {
+		mctx = data;
+	}
 
 	key.pid_id = mctx->pid_id;
 	key.mnt_id = mctx->mnt_id;
@@ -97,6 +111,9 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	} 
 	else if (mctx->event_id == LSM_TASK_FREE) {
 		fprintf(stdout, "[TASK_FREE] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
+	}
+	else if (mctx->event_id == LSM_BPRM_COMMITTED_CREDS){
+		fprintf(stdout, "[BPRM_COMMITTED_CREDS process (pid:%u,ppid:%u,uid:%u) -> binary(%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_bin->filename);
 	}
 	else if (mctx->event_id == TRACE_TASK_NEWTASK) {
 		

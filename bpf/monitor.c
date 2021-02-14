@@ -12,7 +12,7 @@ char _license[] SEC("license") = "GPL";
 
 struct monitor_ctx {
 	/* which hook point is called */
-	u64 event_id;
+	u32 event_id; /* u32? */
 
 	/* subject information */	
 	u32 pid;
@@ -29,15 +29,20 @@ struct monitor_ctx {
 	/* could be EMPTY if not used */
 	u32 o_pid;
 	u32 o_uid;
-	u32 o_newuid; /* for lsm/cred_preapre */
+	u32 o_newuid; /* for lsm/cred_prepare */
+	u32 pad;
+};
 
+struct monitor_ctx_bin {
+	struct monitor_ctx mctx;
+	char filename[NAME_MAX]; // path? or name?
 };
 
 struct conid{
 	char id[64];
 };
 
-struct nskey{
+struct nskey {
 	u32 pid_id;
 	u32 mnt_id;
 };
@@ -51,7 +56,7 @@ struct inner_pids {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 12);
+	__uint(max_entries, 1 << 16);
 } ringbuf SEC(".maps");
 
 
@@ -124,6 +129,8 @@ static __always_inline void set_mctx_subject(struct monitor_ctx *mctx, struct ta
 	
 	mctx->pid_from_ns = get_task_ns_tgid(task);
 	mctx->tid_from_ns = get_task_ns_pid(task);
+	
+	mctx->pad = EMPTY;
 }
 
 static __always_inline void set_mctx_subject_empty(struct monitor_ctx *mctx) {
@@ -136,6 +143,8 @@ static __always_inline void set_mctx_subject_empty(struct monitor_ctx *mctx) {
 	
 	mctx->pid_from_ns = EMPTY;
 	mctx->tid_from_ns = EMPTY;
+
+	mctx->pad = EMPTY;
 }
 /*
 SEC("lsm/cred_prepare")
@@ -155,7 +164,6 @@ int BPF_PROG(lsm_cred_preare, struct cred *new, const struct cred *old, gfp_t gf
 	else {
 		set_mctx_subject_empty(&mctx);
 	}
-
 	mctx.o_pid = EMPTY;
 	mctx.o_uid = old->uid.val;
 	mctx.o_newuid = new->uid.val;
@@ -186,7 +194,6 @@ int BPF_PROG(lsm_task_alloc, struct task_struct *task, unsigned long clone_flags
 	else {
 		set_mctx_subject_empty(&mctx);
 	}
-
 	mctx.o_pid = get_task_pid(task);
 	mctx.o_uid = get_task_uid(task);
 	mctx.o_newuid = EMPTY;
@@ -211,12 +218,79 @@ void BPF_PROG(lsm_task_free, struct task_struct *task)
 	} else {
 		set_mctx_subject_empty(&mctx);
 	}
-
 	mctx.o_pid = get_task_pid(task);
 	mctx.o_uid = get_task_uid(task);
 	mctx.o_newuid = EMPTY;
 
 	bpf_ringbuf_output(&ringbuf, &mctx, sizeof(struct monitor_ctx), 0);
+}
+
+/*
+SEC("lsm/bprm_committed_creds")
+void BPF_PROG(lsm_bprm_committed_creds, struct linux_binprm *bprm)
+{
+	struct monitor_ctx_bin *mctx_bin;
+	struct task_struct *t;
+	//char *filename;
+	int len;
+
+	mctx_bin = (struct monitor_ctx_bin *) bpf_ringbuf_reserve(&ringbuf, sizeof(struct monitor_ctx_bin), 0);
+	if (!mctx_bin) {
+		return;
+	} 
+	
+	mctx_bin->mctx.event_id = LSM_BPRM_COMMITTED_CREDS;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx_bin->mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx_bin->mctx);
+	}
+	//get_bprm_filename(bprm, mctx_bin->filename);
+	
+	mctx_bin->mctx.o_pid = EMPTY;
+	mctx_bin->mctx.o_uid = EMPTY;
+	mctx_bin->mctx.o_newuid = EMPTY;
+	//filename = mctx_bin->filename;
+
+	//bpf_ringbuf_submit(mctx_bin, 0);
+	len = bpf_probe_read_str(mctx_bin->filename, NAME_MAX, bprm->filename);
+	if (len > 0) {
+		bpf_ringbuf_submit(mctx_bin, 0);
+	} else {
+		bpf_ringbuf_discard(mctx_bin, 0);
+	}
+
+
+}
+*/
+
+SEC("lsm/bprm_committed_creds")
+void BPF_PROG(lsm_bprm_committed_creds, struct linux_binprm *bprm)
+{
+	struct monitor_ctx_bin mctx_bin = { 0, };
+	struct task_struct *t;
+	int len;
+
+	mctx_bin.mctx.event_id = LSM_BPRM_COMMITTED_CREDS;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx_bin.mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx_bin.mctx);
+	}
+	
+	mctx_bin.mctx.o_pid = EMPTY;
+	mctx_bin.mctx.o_uid = EMPTY;
+	mctx_bin.mctx.o_newuid = EMPTY;
+	
+	len = bpf_probe_read_str(mctx_bin.filename, sizeof(mctx_bin.filename), bprm->filename);
+	if (len > 0) {
+		bpf_ringbuf_output(&ringbuf, &mctx_bin, sizeof(struct monitor_ctx_bin), 0);
+	}
+
 }
 
 SEC("tracepoint/task/task_newtask")
@@ -233,7 +307,6 @@ int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 	} else {
 		set_mctx_subject_empty(&mctx);	
 	}
-	
 	mctx.o_pid = ctx->pid;
 	mctx.o_uid = EMPTY;
 	mctx.o_newuid = EMPTY;
@@ -258,7 +331,6 @@ int tracepoint__sched__sched_process_exit(struct trace_event_raw_sched_process_t
 	} else {
 		set_mctx_subject_empty(&mctx);
 	}
-
 	mctx.o_pid = ctx->pid;
 	mctx.o_uid = EMPTY;
 	mctx.o_newuid = EMPTY;	
