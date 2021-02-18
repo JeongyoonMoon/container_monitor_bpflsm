@@ -1,5 +1,5 @@
 CURDIR := $(abspath .)
-LIBDIR := $(abspath ./lib)
+LIBDIR := $(abspath ./libbpf)
 BPFDIR := $(LIBDIR)/bpf
 TOOLSINCDIR := $(LIBDIR)/include
 APIDIR := $(TOOLSINCDIR)/uapi
