@@ -170,6 +170,11 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 				bpf_map_delete_elem(conid2pids, conid);
 			}
 		}
+		
+		if (!bpf_map_lookup_elem(pid2path, &mctx->pid, &fp)) {
+			bpf_map_delete_elem(pid2path, &mctx->pid);
+		}
+
 		fprintf(stdout, "[SCHED_PROCESS_EXIT] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
 	}
 	
@@ -226,6 +231,7 @@ int main()
 		goto cleanup;
 	}
 
+	fprintf(stdout, "Initialization finished\n");
 
 	/* poll for samples */
 	while (1){
