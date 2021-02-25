@@ -9,7 +9,6 @@
 char _license[] SEC("license") = "GPL";
 
 __u32 pid_last = 0;
-
 struct file_path {
 	char path[PATH_LEN];
 	int len;

@@ -33,9 +33,10 @@ struct monitor_ctx {
 	u32 pad;
 };
 
-struct monitor_ctx_bin {
+struct monitor_ctx_file {
 	struct monitor_ctx mctx;
 	char filename[NAME_MAX]; // path? or name?
+	u64 o_ino;
 };
 
 struct conid{
@@ -269,29 +270,65 @@ void BPF_PROG(lsm_bprm_committed_creds, struct linux_binprm *bprm)
 SEC("lsm/bprm_committed_creds")
 void BPF_PROG(lsm_bprm_committed_creds, struct linux_binprm *bprm)
 {
-	struct monitor_ctx_bin mctx_bin = { 0, };
+	struct monitor_ctx_file mctx_file = { 0, };
 	struct task_struct *t;
-	int len;
+	//int len;
+	u64 len;
 
-	mctx_bin.mctx.event_id = LSM_BPRM_COMMITTED_CREDS;
+	mctx_file.mctx.event_id = LSM_BPRM_COMMITTED_CREDS;
 	
 	t = (struct task_struct *)bpf_get_current_task();
 	if (t) {
-		set_mctx_subject(&mctx_bin.mctx, t);
+		set_mctx_subject(&mctx_file.mctx, t);
 	} else {
-		set_mctx_subject_empty(&mctx_bin.mctx);
+		set_mctx_subject_empty(&mctx_file.mctx);
 	}
 	
-	mctx_bin.mctx.o_pid = EMPTY;
-	mctx_bin.mctx.o_uid = EMPTY;
-	mctx_bin.mctx.o_newuid = EMPTY;
-	
-	len = bpf_probe_read_str(mctx_bin.filename, sizeof(mctx_bin.filename), bprm->filename);
+	mctx_file.mctx.o_pid = EMPTY;
+	mctx_file.mctx.o_uid = EMPTY;
+	mctx_file.mctx.o_newuid = EMPTY;
+	mctx_file.o_ino = BPF_CORE_READ(bprm, executable, f_inode, i_ino);
+	//len = bpf_d_path(&(bprm->executable->f_path), mctx_file.filename, sizeof(mctx_file.filename));
+	len = bpf_probe_read_str(mctx_file.filename, sizeof(mctx_file.filename), bprm->filename);
 	if (len > 0) {
-		bpf_ringbuf_output(&ringbuf, &mctx_bin, sizeof(struct monitor_ctx_bin), 0);
+		bpf_ringbuf_output(&ringbuf, &mctx_file, sizeof(struct monitor_ctx_file), 0);
 	}
 
 }
+
+SEC("lsm/inode_create")
+int BPF_PROG(lsm_inode_create, struct inode *dir, struct dentry *dentry, umode_t mode, int ret)
+{
+	if (ret) {
+		return ret;
+	}
+
+	struct monitor_ctx_file mctx_file = { 0, };
+	struct task_struct *t;
+	int len;
+
+	mctx_file.mctx.event_id = LSM_INODE_CREATE;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx_file.mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx_file.mctx);
+	}
+	
+	mctx_file.mctx.o_pid = EMPTY;
+	mctx_file.mctx.o_uid = dentry->d_inode->i_uid.val;
+	mctx_file.mctx.o_newuid = EMPTY;
+	mctx_file.o_ino = dentry->d_inode->i_ino; //BPF_CORE_READ(dentry, d_inode, i_ino);
+	len = bpf_probe_read_str(mctx_file.filename, sizeof(mctx_file.filename), dentry->d_name.name);
+	//len = bpf_d_path(dentry->path, mctx_file.filename, NAME_MAX);
+	if (len > 0) {
+		bpf_ringbuf_output(&ringbuf, &mctx_file, sizeof(struct monitor_ctx_file), 0);
+	}
+	return 0;
+
+}
+
 
 SEC("tracepoint/task/task_newtask")
 int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)

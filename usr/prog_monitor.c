@@ -17,6 +17,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "monitor.skel.h"
+#include "monitor_sleepable.skel.h"
 #include "../header/monitor_defs.h"
 #include "../header/container.h"
 
@@ -39,9 +40,10 @@ struct monitor_ctx {
 	uint32_t pad;
 };
 
-struct monitor_ctx_bin {
+struct monitor_ctx_file {
 	struct monitor_ctx mctx;
 	char filename[NAME_MAX];
+	uint64_t o_ino;
 };
 
 struct nskey{
@@ -49,31 +51,40 @@ struct nskey{
 	uint32_t mnt_id;
 };
 
+struct file_path {
+	char path[PATH_LEN];
+	int len;
+};
+
 static int freed = 0;
 
 static struct monitor *skel;
+static struct monitor_sleepable *skel_s;
 static struct ring_buffer *ringbuf;
-static int ns2conid, conid2pids;
+static int ns2conid;
+static int conid2pids;
+static int pid2path;
 
 void sig_handler (int signo);
 
 static int process_ringbuf(void *ctx, void *data, size_t len)
 {
 	struct monitor_ctx *mctx = NULL;
-	struct monitor_ctx_bin *mctx_bin = NULL;
+	struct monitor_ctx_file *mctx_file = NULL;
 	struct nskey key;
-	int new_pids;
-	int pids_fd = -1;
-	uint32_t pids;
+	struct file_path fp;
+	int new_pids; /* fd for new pids (inner map)*/
+	int pids_fd = -1; /* pids (inner map) map fd */
+	uint32_t pids; /* pids(inner map) map id */
 	uint32_t value = EMPTY;
 	char conid[64]={'\0'};
 	char *temp;
 	int ret;
 	int is_container = 1;
 
-	if (len == sizeof(struct monitor_ctx_bin)) {
-		mctx_bin = data;
-		mctx = &(mctx_bin->mctx);
+	if (len == sizeof(struct monitor_ctx_file)) {
+		mctx_file = data;
+		mctx = &(mctx_file->mctx);
 	} else {
 		mctx = data;
 	}
@@ -98,8 +109,8 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 		}		
 	} /* If nskey to container id map lookup fails */
 
-	if (!is_container)
-		return 0;
+	//if (!is_container)
+	//	return 0;
 
 	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
@@ -112,8 +123,15 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	else if (mctx->event_id == LSM_TASK_FREE) {
 		fprintf(stdout, "[TASK_FREE] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
 	}
-	else if (mctx->event_id == LSM_BPRM_COMMITTED_CREDS){
-		fprintf(stdout, "[BPRM_COMMITTED_CREDS process (pid:%u,ppid:%u,uid:%u) -> binary(%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_bin->filename);
+	else if (mctx->event_id == LSM_BPRM_COMMITTED_CREDS) {
+
+		fprintf(stdout, "[BPRM_COMMITTED_CREDS] process (pid:%u,ppid:%u,uid:%u) -> binary(%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename);
+		if (!bpf_map_lookup_elem(pid2path, &mctx->pid, &fp)) {
+			fprintf(stdout, "Absolute path: %s\n", fp.path);
+		}
+	}
+	else if (mctx->event_id == LSM_INODE_CREATE) {
+		fprintf(stdout, "[INODE_CREATE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx->o_uid);
 	}
 	else if (mctx->event_id == TRACE_TASK_NEWTASK) {
 		
@@ -171,16 +189,21 @@ int main()
 	
 	setrlimit(RLIMIT_MEMLOCK, &rlim_new);
 	signal (SIGINT, (void *)sig_handler);
-
+	
+	skel_s = monitor_sleepable__open_and_load();
+	if (!skel_s)
+	{
+		fprintf(stdout, "skeleton open&load failed\n");
+		return 0;
+	}
 	skel = monitor__open_and_load();
 	if (!skel)
 	{
 		fprintf(stdout, "skeleton open&load failed\n");
 		return 0;
 	}
-
-	ringbuf = ring_buffer__new(bpf_map__fd(skel->maps.ringbuf), process_ringbuf, NULL, NULL);
 	
+	ringbuf = ring_buffer__new(bpf_map__fd(skel->maps.ringbuf), process_ringbuf, NULL, NULL);
 	if (!ringbuf){
 		fprintf(stdout, "failed to create ringbuf\n");
 		goto cleanup;
@@ -190,7 +213,13 @@ int main()
 	
 	conid2pids = bpf_map__fd(skel->maps.conid2pids);
 	ns2conid = bpf_map__fd(skel->maps.ns2conid);
+	pid2path = bpf_map__fd(skel_s->maps.pid2path);
 
+	err = monitor_sleepable__attach(skel_s);
+	if (err){
+		fprintf(stdout, "skeleton attachment failed: %d\n", err);
+		goto cleanup;
+	}
 	err = monitor__attach(skel);
 	if (err){
 		fprintf(stdout, "skeleton attachment failed: %d\n", err);
@@ -211,6 +240,7 @@ cleanup:
 	if (freed == 0) {
 		ring_buffer__free(ringbuf);
 		monitor__destroy(skel);
+		monitor_sleepable__destroy(skel_s);
 	}
 	return 0;
 }
@@ -218,5 +248,6 @@ cleanup:
 void sig_handler(int signo){
 	ring_buffer__free(ringbuf);
 	monitor__destroy(skel);
+	monitor_sleepable__destroy(skel_s);
 	freed = 1;
 }
