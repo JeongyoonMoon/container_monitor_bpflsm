@@ -44,6 +44,8 @@ struct monitor_ctx_file {
 	struct monitor_ctx mctx;
 	char filename[NAME_MAX];
 	uint64_t o_ino;
+	uint32_t o_mode;
+	uint32_t o_mask;
 };
 
 struct nskey{
@@ -64,6 +66,7 @@ static struct ring_buffer *ringbuf;
 static int ns2conid;
 static int conid2pids;
 static int pid2path;
+static int ino2path;
 
 void sig_handler (int signo);
 
@@ -109,8 +112,8 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 		}		
 	} /* If nskey to container id map lookup fails */
 
-	//if (!is_container)
-	//	return 0;
+	if (!is_container)
+		return 0;
 
 	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
@@ -151,6 +154,18 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 		} /* If container id is not empty */
 
 		fprintf(stdout, "[TRACE_TASK_NEWTASK] process (pid:%u,uid %u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
+	}
+	else if (mctx->event_id == LSM_FILE_PERMISSION) {
+		if (mctx_file->o_mask == MAY_WRITE) {
+			fprintf(stdout, "[FILE_PERMISSION_WRITE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_uid);
+		}
+		else if (mctx_file->o_mask == MAY_READ) {
+			fprintf(stdout, "[FILE_PERMISSION_READ] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_uid);
+		}
+		
+		if (!bpf_map_lookup_elem(ino2path, &mctx_file->o_ino, &fp)) {
+			fprintf(stdout, "Absolute path: %s\n", fp.path);
+		}
 	}
 	else if (mctx->event_id == TRACE_SCHED_PROCESS_EXIT) {
 		
@@ -219,7 +234,8 @@ int main()
 	conid2pids = bpf_map__fd(skel->maps.conid2pids);
 	ns2conid = bpf_map__fd(skel->maps.ns2conid);
 	pid2path = bpf_map__fd(skel_s->maps.pid2path);
-
+	ino2path = bpf_map__fd(skel_s->maps.ino2path);
+	
 	err = monitor_sleepable__attach(skel_s);
 	if (err){
 		fprintf(stdout, "skeleton attachment failed: %d\n", err);

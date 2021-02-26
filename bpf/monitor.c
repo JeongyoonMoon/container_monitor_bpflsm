@@ -37,6 +37,8 @@ struct monitor_ctx_file {
 	struct monitor_ctx mctx;
 	char filename[NAME_MAX]; // path? or name?
 	u64 o_ino;
+	u32 o_mode;
+	int o_mask;
 };
 
 struct conid{
@@ -57,7 +59,7 @@ struct inner_pids {
 
 struct {
 	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 16);
+	__uint(max_entries, 1 << 24);
 } ringbuf SEC(".maps");
 
 
@@ -288,7 +290,6 @@ void BPF_PROG(lsm_bprm_committed_creds, struct linux_binprm *bprm)
 	mctx_file.mctx.o_uid = EMPTY;
 	mctx_file.mctx.o_newuid = EMPTY;
 	mctx_file.o_ino = BPF_CORE_READ(bprm, executable, f_inode, i_ino);
-	//len = bpf_d_path(&(bprm->executable->f_path), mctx_file.filename, sizeof(mctx_file.filename));
 	len = bpf_probe_read_str(mctx_file.filename, sizeof(mctx_file.filename), bprm->filename);
 	if (len > 0) {
 		bpf_ringbuf_output(&ringbuf, &mctx_file, sizeof(struct monitor_ctx_file), 0);
@@ -321,7 +322,6 @@ int BPF_PROG(lsm_inode_create, struct inode *dir, struct dentry *dentry, umode_t
 	mctx_file.mctx.o_newuid = EMPTY;
 	mctx_file.o_ino = dentry->d_inode->i_ino; //BPF_CORE_READ(dentry, d_inode, i_ino);
 	len = bpf_probe_read_str(mctx_file.filename, sizeof(mctx_file.filename), dentry->d_name.name);
-	//len = bpf_d_path(dentry->path, mctx_file.filename, NAME_MAX);
 	if (len > 0) {
 		bpf_ringbuf_output(&ringbuf, &mctx_file, sizeof(struct monitor_ctx_file), 0);
 	}
@@ -329,6 +329,38 @@ int BPF_PROG(lsm_inode_create, struct inode *dir, struct dentry *dentry, umode_t
 
 }
 
+SEC("lsm/file_permission")
+int BPF_PROG(lsm_file_permission, struct file *file, int mask, int ret)
+{
+	if (ret) {
+		return ret;
+	}
+
+	struct monitor_ctx_file mctx_file = { 0, };
+	struct task_struct *t;
+	int len;
+
+	mctx_file.mctx.event_id = LSM_FILE_PERMISSION;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx_file.mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx_file.mctx);
+	}
+	
+	mctx_file.mctx.o_pid = EMPTY;
+	mctx_file.mctx.o_uid = file->f_inode->i_uid.val;
+	mctx_file.mctx.o_newuid = EMPTY;
+	mctx_file.o_ino = file->f_inode->i_ino; //BPF_CORE_READ(dentry, d_inode, i_ino);
+	mctx_file.o_mask = mask;
+	len = bpf_probe_read_str(mctx_file.filename, sizeof(mctx_file.filename), file->f_path.dentry->d_name.name);
+	if (len > 0) {
+		bpf_ringbuf_output(&ringbuf, &mctx_file, sizeof(struct monitor_ctx_file), 0);
+	}
+	return 0;
+
+}
 
 SEC("tracepoint/task/task_newtask")
 int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
