@@ -49,7 +49,7 @@ cd ..
 
 ### TODO
 - Complete the installation script  
-- Add monitoring file operations  
+- Add a file hook to update ino2path map 
 - Add monitoring network operations  
 - Add log options and hook options  
 - Change ringbuf API from output API to reserve/commit API
