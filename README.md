@@ -39,7 +39,7 @@ make-kpkg -j4 --initrd kernel_image
 cd ..
 #dpkg -i [linux_image_file]
 
-#reboot
+# reboot
 # make tools/bpf
 # cp tools/bpf/bpftool/bpftool /usr/sbin
 # git clone
@@ -48,9 +48,12 @@ cd ..
 ```
 
 ### TODO
+- Enable the monitor to log to a file  
+- Add a filesys2rootpath map and make each file access utilize the map  
+
 - Complete the installation script  
-- Add a file hook to update ino2path map 
-- Add monitoring network operations  
+- Add a file hook to update a ino2path map (Implemented, verification needed) 
+- Add monitoring hooks for network operations  
 - Add log options and hook options  
 - Change ringbuf API from output API to reserve/commit API
 - Change struct initialization part

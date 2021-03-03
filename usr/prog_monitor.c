@@ -48,6 +48,12 @@ struct monitor_ctx_file {
 	uint32_t o_mask;
 };
 
+struct monitor_ctx_filesys {
+	struct monitor_ctx mctx;
+	char dev_name[DEV_NAME_MAX];
+	char type[FS_TYPE_MAX];
+};
+
 struct nskey{
 	uint32_t pid_id;
 	uint32_t mnt_id;
@@ -74,6 +80,7 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 {
 	struct monitor_ctx *mctx = NULL;
 	struct monitor_ctx_file *mctx_file = NULL;
+	struct monitor_ctx_filesys *mctx_fs = NULL;
 	struct nskey key;
 	struct file_path fp;
 	int new_pids; /* fd for new pids (inner map)*/
@@ -88,7 +95,10 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	if (len == sizeof(struct monitor_ctx_file)) {
 		mctx_file = data;
 		mctx = &(mctx_file->mctx);
-	} else {
+	} else if (len == sizeof(struct monitor_ctx_filesys)) {
+		mctx_fs = data;
+		mctx = &(mctx_fs->mctx);	
+	} else{
 		mctx = data;
 	}
 
@@ -135,6 +145,12 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	}
 	else if (mctx->event_id == LSM_INODE_CREATE) {
 		fprintf(stdout, "[INODE_CREATE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx->o_uid);
+	}
+	else if (mctx->event_id == LSM_INODE_UNLINK) {
+		fprintf(stdout, "[INODE_UNLINK] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,nlink:%u,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_newuid, mctx->o_uid);
+	}
+	else if (mctx->event_id == LSM_SB_MOUNT) {
+		fprintf(stdout, "[SB_MOUNT] process (pid:%u,ppid:%u,uid:%u) -> filesystem(dev:%s,type:%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_fs->dev_name, mctx_fs->type);
 	}
 	else if (mctx->event_id == TRACE_TASK_NEWTASK) {
 		

@@ -43,9 +43,8 @@ void BPF_PROG(lsm_s_bprm_committed_creds, struct linux_binprm *bprm)
 	}
 	return;	
 }
-/*
-SEC("lsm.s/file_permission")
-int BPF_PROG(lsm_s_file_permission, struct file *file, int mask, int ret)
+SEC("lsm.s/file_open")
+int BPF_PROG(lsm_s_file_open, struct file *file, int ret)
 {
 	if (ret) {
 		return ret;
@@ -59,8 +58,36 @@ int BPF_PROG(lsm_s_file_permission, struct file *file, int mask, int ret)
 		if (fp.len > 0) {
 			bpf_map_update_elem(&ino2path, &ino, &fp, BPF_ANY);
 		}
-	}
+	} /* if there's no entry related to inode */
 	return 0;	
+}
+SEC("lsm.s/inode_unlink")
+int BPF_PROG(lsm_s_inode_unlink, struct inode *dir, struct dentry *dentry, int ret)
+{
+	if (ret) {
+		return ret;
+	}
+
+	u64 ino = dentry->d_inode->i_ino;
+	u32 nlink = dentry->d_inode->i_nlink;
+	if (nlink == 1u) {	
+		if (!bpf_map_lookup_elem(&ino2path, &ino)) {
+			bpf_map_delete_elem(&ino2path, &ino);
+		}
+	}
+	/* verification is needed */
+
+	return ret;
+}
+/*
+SEC("lsm.s/sb_mount")
+int BPF_PROG(lsm_s_sb_mount, const char *dev_name, const struct path *path, const char *type, unsigned long flags, void *data, int ret)
+{
+	if (ret) {
+		return ret;
+	}
+
+
 }
 */
 /* TODO: Delete ino2path map entry */

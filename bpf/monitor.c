@@ -41,6 +41,12 @@ struct monitor_ctx_file {
 	int o_mask;
 };
 
+struct monitor_ctx_filesys {
+	struct monitor_ctx mctx;
+	char dev_name[DEV_NAME_MAX];
+	char type[FS_TYPE_MAX];
+};
+
 struct conid{
 	char id[64];
 };
@@ -329,6 +335,38 @@ int BPF_PROG(lsm_inode_create, struct inode *dir, struct dentry *dentry, umode_t
 
 }
 
+SEC("lsm/inode_unlink")
+int BPF_PROG(lsm_inode_unlink, struct inode *dir, struct dentry *dentry, int ret)
+{
+	if (ret) {
+		return ret;
+	}
+
+	struct monitor_ctx_file mctx_file = { 0, };
+	struct task_struct *t;
+	int len;
+
+	mctx_file.mctx.event_id = LSM_INODE_UNLINK;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx_file.mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx_file.mctx);
+	}
+	
+	mctx_file.mctx.o_pid = EMPTY;
+	mctx_file.mctx.o_uid = dentry->d_inode->i_uid.val;
+	mctx_file.mctx.o_newuid = dentry->d_inode->i_nlink; // temporal
+	mctx_file.o_ino = dentry->d_inode->i_ino; //BPF_CORE_READ(dentry, d_inode, i_ino);
+	len = bpf_probe_read_str(mctx_file.filename, sizeof(mctx_file.filename), dentry->d_name.name);
+	if (len > 0) {
+		bpf_ringbuf_output(&ringbuf, &mctx_file, sizeof(struct monitor_ctx_file), 0);
+	}
+	return 0;
+
+}
+
 SEC("lsm/file_permission")
 int BPF_PROG(lsm_file_permission, struct file *file, int mask, int ret)
 {
@@ -362,6 +400,35 @@ int BPF_PROG(lsm_file_permission, struct file *file, int mask, int ret)
 
 }
 
+SEC("lsm/sb_mount")
+int BPF_PROG(lsm_sb_mount, const char *dev_name, const struct path *path, const char *type, unsigned long flags, void *data, int ret)
+{
+	if (ret) {
+		return ret;
+	}
+
+	struct monitor_ctx_filesys mctx_fs = {0, };
+	struct task_struct *t;
+	int len;
+
+	mctx_fs.mctx.event_id = LSM_SB_MOUNT;
+	
+	t = (struct task_struct *)bpf_get_current_task();
+	if (t) {
+		set_mctx_subject(&mctx_fs.mctx, t);
+	} else {
+		set_mctx_subject_empty(&mctx_fs.mctx);
+	}
+	len = bpf_probe_read_str(mctx_fs.dev_name, sizeof(mctx_fs.dev_name), dev_name);
+
+	if (len > 0) {
+		len = bpf_probe_read_str(mctx_fs.type, sizeof(mctx_fs.type), type);
+		if (len > 0) {
+			bpf_ringbuf_output(&ringbuf, &mctx_fs, sizeof(struct monitor_ctx_filesys), 0);
+		}
+	}
+	return ret;
+}
 SEC("tracepoint/task/task_newtask")
 int tracepoint__task__task_newtask(struct trace_event_raw_task_newtask *ctx)
 {
