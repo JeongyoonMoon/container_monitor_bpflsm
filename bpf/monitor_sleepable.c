@@ -71,11 +71,10 @@ int BPF_PROG(lsm_s_inode_unlink, struct inode *dir, struct dentry *dentry, int r
 	u64 ino = dentry->d_inode->i_ino;
 	u32 nlink = dentry->d_inode->i_nlink;
 	if (nlink == 1u) {	
-		if (!bpf_map_lookup_elem(&ino2path, &ino)) {
+		if (bpf_map_lookup_elem(&ino2path, &ino)) {
 			bpf_map_delete_elem(&ino2path, &ino);
 		}
 	}
-	/* verification is needed */
 
 	return ret;
 }
@@ -87,7 +86,8 @@ int BPF_PROG(lsm_s_sb_mount, const char *dev_name, const struct path *path, cons
 		return ret;
 	}
 
+	u32 dev = path->mnt->mnt_sb.s_dev;
+
 
 }
 */
-/* TODO: Delete ino2path map entry */

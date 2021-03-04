@@ -366,7 +366,6 @@ int BPF_PROG(lsm_inode_unlink, struct inode *dir, struct dentry *dentry, int ret
 	return 0;
 
 }
-
 SEC("lsm/file_permission")
 int BPF_PROG(lsm_file_permission, struct file *file, int mask, int ret)
 {
@@ -399,7 +398,6 @@ int BPF_PROG(lsm_file_permission, struct file *file, int mask, int ret)
 	return 0;
 
 }
-
 SEC("lsm/sb_mount")
 int BPF_PROG(lsm_sb_mount, const char *dev_name, const struct path *path, const char *type, unsigned long flags, void *data, int ret)
 {

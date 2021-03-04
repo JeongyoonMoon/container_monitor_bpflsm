@@ -48,11 +48,10 @@ cd ..
 ```
 
 ### TODO
-- Enable the monitor to log to a file  
+- Enable the monitor to log to a file (temporal implementation, improvement needed) 
 - Add a filesys2rootpath map and make each file access utilize the map  
 
 - Complete the installation script  
-- Add a file hook to update a ino2path map (Implemented, verification needed) 
 - Add monitoring hooks for network operations  
 - Add log options and hook options  
 - Change ringbuf API from output API to reserve/commit API

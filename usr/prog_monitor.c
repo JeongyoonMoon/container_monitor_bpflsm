@@ -15,6 +15,7 @@
 #include <linux/ring_buffer.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdio.h>
 #include <unistd.h>
 #include "monitor.skel.h"
 #include "monitor_sleepable.skel.h"
@@ -73,7 +74,8 @@ static int ns2conid;
 static int conid2pids;
 static int pid2path;
 static int ino2path;
-
+static FILE *logfile = NULL;
+static char *logpath = "./log";
 void sig_handler (int signo);
 
 static int process_ringbuf(void *ctx, void *data, size_t len)
@@ -91,7 +93,7 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	char *temp;
 	int ret;
 	int is_container = 1;
-
+	
 	if (len == sizeof(struct monitor_ctx_file)) {
 		mctx_file = data;
 		mctx = &(mctx_file->mctx);
@@ -128,29 +130,32 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 	//fprintf(stdout, "pid_id: %u, mnt_id: %u\n", key.pid_id, key.mnt_id);
 
 	if (mctx->event_id == LSM_CRED_PREPARE) {
-		fprintf(stdout, "[CRED_PREPARE] process(pid:%u,uid:%u) -> from cred(uid:%u) to cred(uid:%u)\n", mctx->pid, mctx->uid, mctx->o_uid, mctx->o_newuid);
+		fprintf(logfile, "[CRED_PREPARE] process(pid:%u,uid:%u) -> from cred(uid:%u) to cred(uid:%u)\n", mctx->pid, mctx->uid, mctx->o_uid, mctx->o_newuid);
 	}
 	else if (mctx->event_id == LSM_TASK_ALLOC) {
-		fprintf(stdout, "[TASK_ALLOC] process (pid:%u,uid:%u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
+		fprintf(logfile, "[TASK_ALLOC] process (pid:%u,uid:%u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
 	} 
 	else if (mctx->event_id == LSM_TASK_FREE) {
-		fprintf(stdout, "[TASK_FREE] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
+		fprintf(logfile, "[TASK_FREE] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
 	}
 	else if (mctx->event_id == LSM_BPRM_COMMITTED_CREDS) {
 
-		fprintf(stdout, "[BPRM_COMMITTED_CREDS] process (pid:%u,ppid:%u,uid:%u) -> binary(%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename);
+		fprintf(logfile, "[BPRM_COMMITTED_CREDS] process (pid:%u,ppid:%u,uid:%u) -> binary(%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename);
 		if (!bpf_map_lookup_elem(pid2path, &mctx->pid, &fp)) {
-			fprintf(stdout, "Absolute path: %s\n", fp.path);
+			fprintf(logfile, "Absolute path: %s\n", fp.path);
 		}
 	}
 	else if (mctx->event_id == LSM_INODE_CREATE) {
-		fprintf(stdout, "[INODE_CREATE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx->o_uid);
+		fprintf(logfile, "[INODE_CREATE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx->o_uid);
 	}
 	else if (mctx->event_id == LSM_INODE_UNLINK) {
-		fprintf(stdout, "[INODE_UNLINK] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,nlink:%u,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_newuid, mctx->o_uid);
+		fprintf(logfile, "[INODE_UNLINK] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,nlink:%u,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_newuid, mctx->o_uid);
+		if (!bpf_map_lookup_elem(ino2path, &mctx_file->o_ino, &fp)) {
+			fprintf(logfile, "Absolute path: %s\n", fp.path);
+		}	
 	}
 	else if (mctx->event_id == LSM_SB_MOUNT) {
-		fprintf(stdout, "[SB_MOUNT] process (pid:%u,ppid:%u,uid:%u) -> filesystem(dev:%s,type:%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_fs->dev_name, mctx_fs->type);
+		fprintf(logfile, "[SB_MOUNT] process (pid:%u,ppid:%u,uid:%u) -> filesystem(dev:%s,type:%s)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_fs->dev_name, mctx_fs->type);
 	}
 	else if (mctx->event_id == TRACE_TASK_NEWTASK) {
 		
@@ -169,18 +174,18 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 			close(pids_fd);
 		} /* If container id is not empty */
 
-		fprintf(stdout, "[TRACE_TASK_NEWTASK] process (pid:%u,uid %u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
+		fprintf(logfile, "[TRACE_TASK_NEWTASK] process (pid:%u,uid %u) ->  process (pid:%u)\n", mctx->pid, mctx->uid, mctx->o_pid);
 	}
 	else if (mctx->event_id == LSM_FILE_PERMISSION) {
 		if (mctx_file->o_mask == MAY_WRITE) {
-			fprintf(stdout, "[FILE_PERMISSION_WRITE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_uid);
+			fprintf(logfile, "[FILE_PERMISSION_WRITE] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_uid);
 		}
 		else if (mctx_file->o_mask == MAY_READ) {
-			fprintf(stdout, "[FILE_PERMISSION_READ] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_uid);
+			fprintf(logfile, "[FILE_PERMISSION_READ] process (pid:%u,ppid:%u,uid:%u) -> file(%s,ino:%lu,uid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx_file->filename, mctx_file->o_ino, mctx->o_uid);
 		}
 		
 		if (!bpf_map_lookup_elem(ino2path, &mctx_file->o_ino, &fp)) {
-			fprintf(stdout, "Absolute path: %s\n", fp.path);
+			fprintf(logfile, "Absolute path: %s\n", fp.path);
 		}
 	}
 	else if (mctx->event_id == TRACE_SCHED_PROCESS_EXIT) {
@@ -206,7 +211,7 @@ static int process_ringbuf(void *ctx, void *data, size_t len)
 			bpf_map_delete_elem(pid2path, &mctx->pid);
 		}
 
-		fprintf(stdout, "[SCHED_PROCESS_EXIT] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
+		fprintf(logfile, "[SCHED_PROCESS_EXIT] process (pid:%u,ppid:%u,uid:%u) -> process (pid:%u)\n", mctx->pid, mctx->ppid, mctx->uid, mctx->o_pid);
 	}
 	
 	//fprintf(stdout, "pid from ns: %u tid from ns: %u \n", mctx->pid_from_ns, mctx->tid_from_ns);
@@ -226,6 +231,12 @@ int main()
 	setrlimit(RLIMIT_MEMLOCK, &rlim_new);
 	signal (SIGINT, (void *)sig_handler);
 	
+	logfile = fopen(logpath, "w+");
+	if (logfile == NULL) {
+		logfile = stdin;
+	}
+
+
 	skel_s = monitor_sleepable__open_and_load();
 	if (!skel_s)
 	{
@@ -276,6 +287,10 @@ int main()
 	}
 cleanup:
 	if (freed == 0) {
+		fflush(logfile);
+		if (logfile != stdin) {
+			fclose(logfile);
+		}
 		ring_buffer__free(ringbuf);
 		monitor__destroy(skel);
 		monitor_sleepable__destroy(skel_s);
@@ -284,6 +299,10 @@ cleanup:
 }
 
 void sig_handler(int signo){
+	fflush(logfile);
+	if (logfile != stdin) {
+		fclose(logfile);
+	}
 	ring_buffer__free(ringbuf);
 	monitor__destroy(skel);
 	monitor_sleepable__destroy(skel_s);
